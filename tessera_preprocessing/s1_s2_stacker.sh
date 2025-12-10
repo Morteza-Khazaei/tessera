@@ -12,7 +12,7 @@ set -u
 #######################################
 
 # === Basic Configuration ===
-BASE_DIR="/absolute/path/to/your/data_dir"
+BASE_DIR="/home/morteza/usask/tessera/my_data/images"
 OUT_DIR="${BASE_DIR}/data_processed"
 DOWNSAMPLE_RATE=1
 

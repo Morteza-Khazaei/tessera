@@ -11,10 +11,10 @@
 ###############This needs to be modified to your environment###############
 # Set default values
 # This is the main directory where all processed and raw data will be stored
-BASE_DATA_DIR="/absolute/path/to/your/data_dir"
+BASE_DATA_DIR="/home/morteza/usask/tessera/my_data/images"
 
 # Python environment that has the required packages installed
-export PYTHON_ENV="/absolute/path/to/your/python_env/bin/python"
+export PYTHON_ENV="/home/morteza/usask/tessera/.venv/bin/python"
 
 # CPU:GPU split ratio
 # The script supports simultaneous inference using both CPU and GPU. This ratio specifies the proportion of retiled_patches each device will handle. 

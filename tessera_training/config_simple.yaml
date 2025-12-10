@@ -1,0 +1,67 @@
+# TESSERA Training Configuration - Simplified for Replication
+# Focus: Match the pretrained checkpoint architecture exactly
+
+# ============================================================================
+# Model Architecture (MUST MATCH CHECKPOINT)
+# ============================================================================
+model:
+  latent_dim: 128                    # Final embedding dimension
+  fusion_method: 'concat'            # S2 + S1 fusion method
+  projector_hidden_dim: 16384        # Projector MLP hidden dimension
+  projector_out_dim: 16384           # Projector output dimension
+
+# ============================================================================
+# Data Configuration
+# ============================================================================
+data:
+  # UPDATE THIS PATH to your preprocessed data
+  train_dirs:
+    - '/mnt/d/USASK/my_data/download/retiled_d_pixel'
+  
+  # Temporal sampling parameters
+  sample_length: 40                  # Number of timesteps to sample
+  num_augmentations: 3               # Number of augmented views per pixel
+  min_valid_timesteps: 10            # Minimum valid observations required
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
+training:
+  # Batch size - reduce if you get OOM errors
+  batch_size: 256                    # Try 128 or 64 if OOM
+  
+  # Training duration
+  num_epochs: 1                      # TESSERA trained for 1 epoch only
+  
+  # Optimization
+  learning_rate: 1.0e-4              # Initial learning rate
+  min_lr: 1.0e-6                     # Minimum learning rate (cosine annealing)
+  weight_decay: 1.0e-6               # AdamW weight decay
+  
+  # Data loading
+  num_workers: 4                     # Parallel data loading workers (reduced to avoid deadlock)
+  
+  # Logging and checkpointing
+  log_interval: 100                  # Log every N steps
+  save_interval: 1                   # Save checkpoint every N epochs
+
+# ============================================================================
+# Loss Configuration (from TESSERA paper)
+# ============================================================================
+loss:
+  lambda_bt: 0.005                   # Barlow Twins redundancy reduction weight
+  alpha_mix: 0.2                     # Mixup alpha parameter
+  mix_weight: 0.1                    # Weight for mixup regularization
+
+# ============================================================================
+# Hardware
+# ============================================================================
+device: 'cuda'                       # 'cuda' or 'cpu'
+
+# ============================================================================
+# Notes:
+# ============================================================================
+# 1. The pretrained checkpoint was trained for 1 epoch on 800M pixels
+# 2. Training took ~48,600 steps (batch_size * steps = ~800M pixels)
+# 3. For small-scale testing, use fewer pixels but same hyperparameters
+# 4. Key hyperparameters (lambda_bt, learning_rate) should match paper

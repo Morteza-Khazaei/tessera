@@ -1,0 +1,36 @@
+# TESSERA Training Configuration
+
+# Model architecture
+model:
+  latent_dim: 128
+  fusion_method: 'concat'  # 'concat' or 'sum'
+  projector_hidden_dim: 16384
+  projector_out_dim: 16384
+
+# Data configuration
+data:
+  train_dirs:
+    - '/path/to/retiled_d_pixel'  # Update with your data path
+  sample_length: 40
+  num_augmentations: 3
+  min_valid_timesteps: 10
+
+# Training configuration
+training:
+  batch_size: 256
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  min_lr: 1.0e-6
+  weight_decay: 1.0e-6
+  num_workers: 8
+  log_interval: 100
+  save_interval: 1  # Save checkpoint every N epochs
+
+# Loss configuration
+loss:
+  lambda_bt: 0.005  # Barlow Twins redundancy reduction weight
+  alpha_mix: 0.2    # Mixup alpha parameter
+  mix_weight: 0.1   # Weight for mixup regularization
+
+# Hardware
+device: 'cuda'  # 'cuda' or 'cpu'

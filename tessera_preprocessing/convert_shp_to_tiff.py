@@ -261,7 +261,7 @@ def main():
     Main function to run the conversion process.
     """
     # Input shapefile path
-    shp_path = 'absolute_path_to_your_shp_file'
+    shp_path = '/mnt/d/USASK/my_data/upper_assinib_grids_05deg_id01/upper_assinib_grids_05deg_id01.shp'
 
     # Call the conversion function
     try:

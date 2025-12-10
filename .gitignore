@@ -26,3 +26,5 @@ tessera_preprocessing/downsample_tiff.py
 tessera_preprocessing/*.png
 tessera_preprocessing/tiff_shp_analyzer.py
 .vscode
+
+tessera_infer/checkpoints/*

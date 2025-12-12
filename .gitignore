@@ -32,3 +32,23 @@ tessera_infer/checkpoints/*
 
 # drop venv
 .venv/
+
+# Additional virtual env names
+env/
+.env/
+
+# Python cache/output
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor and OS temp files
+*.swp
+*.swo
+*.tmp
+*.bak
+*~
+.DS_Store

@@ -11,9 +11,9 @@ set -u
 #######################################
 
 # === Basic Configuration ===
-GEOJSON_FILE="/home/morteza/usask/tessera/mgrs_grids/Upper_Assiniboine_25km_grids.geojson"
-BASE_OUT_DIR="/mnt/d/USASK/Upper_Assiniboine_grid_25km"
-PYTHON_ENV="/home/morteza/usask/tessera/.venv/bin/python"
+GEOJSON_FILE="/home/kanj241/projects/def-kanj241/kanj241/N2O/CSA/repo/tessera/mgrs_grids/Upper_Assiniboine_25km_grids.geojson"
+BASE_OUT_DIR="/home/kanj241/projects/def-kanj241/kanj241/N2O/CSA/data/Upper_Assiniboine_grid_25km/"
+PYTHON_ENV="/home/kanj241/projects/def-kanj241/kanj241/N2O/CSA/repo/tessera/.venv/bin/python"
 
 # === Sentinel-1 & Sentinel-2 Processing Configuration ===
 YEAR=2024 # Range [2017-2024]
@@ -22,28 +22,30 @@ RESOLUTION=10.0  # Resolution of the input TIFF, also the output resolution (met
 # === Sentinel-1 Configuration ===
 S1_ENABLED=true                    # Enable S1 processing
 S1_PARTITIONS=12                   # Number of S1 parallel partitions
-S1_TOTAL_WORKERS=12                # Total number of S1 Dask workers
+S1_TOTAL_WORKERS=12                # Total number of S1 Dask workers (match partitions)
 S1_WORKER_MEMORY=4                 # Memory per S1 worker (GB)
 S1_CHUNKSIZE=1024                  # S1 stackstac chunk size
 S1_ORBIT_STATE="both"              # Orbit state: ascending/descending/both
 S1_MIN_COVERAGE=0.01               # Minimum valid pixel coverage for S1 (%)
 S1_RESOLUTION=$RESOLUTION          # S1 output resolution (meters)
-S1_OVERWRITE=true                  # Overwrite existing S1 files
+S1_OVERWRITE=false                 # Overwrite existing S1 files
 
 # === Sentinel-2 Configuration ===
 S2_ENABLED=true                    # Enable S2 processing
 S2_PARTITIONS=24                   # Number of S2 parallel partitions
-S2_TOTAL_WORKERS=24                # Total number of S2 Dask workers
+S2_TOTAL_WORKERS=24                # Total number of S2 Dask workers (match partitions)
 S2_WORKER_MEMORY=4                 # Memory per S2 worker (GB)
 S2_CHUNKSIZE=1024                  # S2 stackstac chunk size
 S2_MAX_CLOUD=100                   # Maximum cloud coverage for S2 (%)
 S2_RESOLUTION=$RESOLUTION          # S2 output resolution (meters)
 S2_MIN_COVERAGE=0.01               # Minimum valid pixel coverage for S2 (%)
-S2_OVERWRITE=true                  # Overwrite existing S2 files
+S2_OVERWRITE=false                 # Overwrite existing S2 files
 
 # === System Configuration ===
 DEBUG=false                        # Enable debug mode
 LOG_INTERVAL=10                    # Progress update interval (seconds)
+MAX_PARALLEL_TILES=1               # Number of MGRS tiles to process concurrently (safer default)
+GZD_FILTER="14U"                      # Optional: only process tiles whose MGRS starts with this GZD (e.g., "13U")
 
 #######################################
 # Internal Variables
@@ -53,6 +55,9 @@ END_TIME="${YEAR}-12-31"
 
 SCRIPT_START_TIME=$(date +%s)
 SCRIPT_NAME=$(basename "$0")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+LOG_DIR="${BASE_OUT_DIR%/}/logs"
+MAIN_LOG="${LOG_DIR}/mgrs_processing_$(date +%Y%m%d_%H%M%S).log"
 
 # Color definitions
 RED='\033[0;31m'
@@ -74,21 +79,21 @@ log() {
 
     case $level in
         INFO)
-            echo -e "${timestamp} ${BLUE}[INFO]${NC} $message"
+            echo -e "${timestamp} ${BLUE}[INFO]${NC} $message" | tee -a "$MAIN_LOG"
             ;;
         SUCCESS)
-            echo -e "${timestamp} ${GREEN}[SUCCESS]${NC} $message"
+            echo -e "${timestamp} ${GREEN}[SUCCESS]${NC} $message" | tee -a "$MAIN_LOG"
             ;;
         WARNING)
-            echo -e "${timestamp} ${YELLOW}[WARNING]${NC} $message"
+            echo -e "${timestamp} ${YELLOW}[WARNING]${NC} $message" | tee -a "$MAIN_LOG"
             ;;
         ERROR)
-            echo -e "${timestamp} ${RED}[ERROR]${NC} $message"
+            echo -e "${timestamp} ${RED}[ERROR]${NC} $message" | tee -a "$MAIN_LOG"
             ;;
         HEADER)
-            echo -e "${PURPLE}═══════════════════════════════════════════════════════════════════${NC}"
-            echo -e "${timestamp} ${PURPLE}$message${NC}"
-            echo -e "${PURPLE}═══════════════════════════════════════════════════════════════════${NC}"
+            echo -e "${PURPLE}═══════════════════════════════════════════════════════════════════${NC}" | tee -a "$MAIN_LOG"
+            echo -e "${timestamp} ${PURPLE}$message${NC}" | tee -a "$MAIN_LOG"
+            echo -e "${PURPLE}═══════════════════════════════════════════════════════════════════${NC}" | tee -a "$MAIN_LOG"
             ;;
     esac
 }
@@ -239,6 +244,87 @@ monitor_processes() {
         fi
 
         sleep $LOG_INTERVAL
+    done
+}
+
+#######################################
+# Tile Concurrency Helpers
+#######################################
+count_active_tiles() {
+    local -n pids=$1
+    local -n done_map=$2
+    local active=0
+
+    for pid in "${pids[@]}"; do
+        [[ -n "${done_map[$pid]:-}" ]] && continue
+        if kill -0 "$pid" 2>/dev/null; then
+            active=$((active + 1))
+        fi
+    done
+
+    echo $active
+}
+
+reap_finished_tiles() {
+    local -n pids=$1
+    local -n ids=$2
+    local -n start_times=$3
+    local -n completed=$4
+    local -n failed=$5
+    local -n done_map=$6
+
+    for i in "${!pids[@]}"; do
+        local pid=${pids[i]}
+        if [[ -n "${done_map[$pid]:-}" ]]; then
+            continue
+        fi
+
+        if ! kill -0 "$pid" 2>/dev/null; then
+            local end_time=$(date +%s)
+            local duration=$((end_time - ${start_times[i]}))
+            local tile_id=${ids[i]}
+
+            wait $pid
+            local exit_code=$?
+            done_map[$pid]=1
+
+            if [ $exit_code -eq 0 ]; then
+                log SUCCESS "[${tile_id}] Tile completed ($(format_duration $duration))"
+                completed+=("$tile_id")
+            else
+                log ERROR "[${tile_id}] Tile failed with exit code $exit_code ($(format_duration $duration))"
+                failed+=("$tile_id")
+            fi
+        fi
+    done
+}
+
+wait_for_tile_slot() {
+    # Capture the variable names so we can pass the original arrays/maps down
+    # the stack without tripping circular nameref warnings.
+    local pids_name=$1
+    local ids_name=$2
+    local start_times_name=$3
+    local completed_name=$4
+    local failed_name=$5
+    local done_map_name=$6
+
+    # Namerefs for local use in this function
+    local -n pids=$pids_name
+    local -n ids=$ids_name
+    local -n start_times=$start_times_name
+    local -n completed=$completed_name
+    local -n failed=$failed_name
+    local -n done_map=$done_map_name
+
+    while true; do
+        reap_finished_tiles "$pids_name" "$ids_name" "$start_times_name" "$completed_name" "$failed_name" "$done_map_name"
+        local active
+        active=$(count_active_tiles "$pids_name" "$done_map_name")
+        if (( active < MAX_PARALLEL_TILES )); then
+            break
+        fi
+        sleep 2
     done
 }
 
@@ -402,7 +488,7 @@ process_tile_sentinel1() {
         local debug_flag=""
         [[ "$DEBUG" == "true" ]] && debug_flag="--debug"
 
-        $PYTHON_ENV s1_fast_processor.py \
+        $PYTHON_ENV "$SCRIPT_DIR/s1_fast_processor.py" \
             --input_tiff "$input_tiff" \
             --start_date "$p_start" \
             --end_date "$p_end" \
@@ -482,7 +568,7 @@ process_tile_sentinel2() {
         local s2_start="${p_start}T00:00:00"
         local s2_end="${p_end}T23:59:59"
 
-        $PYTHON_ENV s2_fast_processor.py \
+        $PYTHON_ENV "$SCRIPT_DIR/s2_fast_processor.py" \
             --input_tiff "$input_tiff" \
             --start_date "$s2_start" \
             --end_date "$s2_end" \
@@ -544,38 +630,29 @@ process_mgrs_tile() {
     # Create TIFF for this tile
     local input_tiff="${tile_dir}/${mgrs_id}.tiff"
 
-    if [[ ! -f "$input_tiff" ]]; then
+    # Only reuse existing TIFFs if they are non-empty; otherwise regenerate.
+    if [[ -f "$input_tiff" && -s "$input_tiff" ]]; then
+        log INFO "[$mgrs_id] TIFF already exists and is non-empty: $input_tiff"
+    else
         log INFO "[$mgrs_id] Creating TIFF from GeoJSON feature..."
         if ! convert_feature_to_tiff "$mgrs_id" "$feature_json" "$input_tiff"; then
             log ERROR "[$mgrs_id] Failed to create TIFF"
             return 1
         fi
-    else
-        log INFO "[$mgrs_id] TIFF already exists: $input_tiff"
     fi
 
     # Processing flags
     local s1_success=true
     local s2_success=true
 
-    # Start S1 and S2 processing in parallel
+    # Run S1 then S2 sequentially per tile to avoid doubling memory/CPU pressure
     if [[ "$S1_ENABLED" == "true" && "$S2_ENABLED" == "true" ]]; then
-        log INFO "[$mgrs_id] Starting parallel S1 and S2 processing..."
-
-        ( process_tile_sentinel1 "$mgrs_id" "$input_tiff" "$tile_dir" "$log_dir" ) &
-        local s1_pid=$!
-
-        ( process_tile_sentinel2 "$mgrs_id" "$input_tiff" "$tile_dir" "$log_dir" ) &
-        local s2_pid=$!
-
-        if ! wait $s1_pid; then
+        if ! process_tile_sentinel1 "$mgrs_id" "$input_tiff" "$tile_dir" "$log_dir"; then
             s1_success=false
         fi
-
-        if ! wait $s2_pid; then
+        if ! process_tile_sentinel2 "$mgrs_id" "$input_tiff" "$tile_dir" "$log_dir"; then
             s2_success=false
         fi
-
     elif [[ "$S1_ENABLED" == "true" ]]; then
         if ! process_tile_sentinel1 "$mgrs_id" "$input_tiff" "$tile_dir" "$log_dir"; then
             s1_success=false
@@ -593,21 +670,43 @@ process_mgrs_tile() {
     # Log result
     if [[ "$s1_success" == "true" && "$s2_success" == "true" ]]; then
         log SUCCESS "[$mgrs_id] Tile processing completed ($(format_duration $tile_duration))"
-        return 0
     else
         log ERROR "[$mgrs_id] Tile processing failed ($(format_duration $tile_duration))"
-        return 1
     fi
+
+    # Combine partition logs for convenience
+    if [[ "$S1_ENABLED" == "true" ]]; then
+        cat "$log_dir"/S1_*.log > "$log_dir/s1_combined.log" 2>/dev/null || true
+        log INFO "[$mgrs_id] S1 combined log: $log_dir/s1_combined.log"
+    fi
+
+    if [[ "$S2_ENABLED" == "true" ]]; then
+        cat "$log_dir"/S2_*.log > "$log_dir/s2_combined.log" 2>/dev/null || true
+        log INFO "[$mgrs_id] S2 combined log: $log_dir/s2_combined.log"
+    fi
+
+    if [[ "$s1_success" == "true" && "$s2_success" == "true" ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 #######################################
 # Main Program
 #######################################
 main() {
+    mkdir -p "$BASE_OUT_DIR" "$LOG_DIR"
+    : > "$MAIN_LOG"
+
     log HEADER "MGRS Tile-based Sentinel Downloader Started"
     log INFO "GeoJSON: $GEOJSON_FILE"
     log INFO "Output Base: $BASE_OUT_DIR"
+    log INFO "Logs: $MAIN_LOG"
     log INFO "Year: $YEAR"
+    log INFO "Time range: $START_TIME to $END_TIME"
+    log INFO "S1 Enabled: $S1_ENABLED | S2 Enabled: $S2_ENABLED"
+    log INFO "Tile concurrency: $MAX_PARALLEL_TILES"
 
     # Check dependencies
     if ! command -v jq &> /dev/null; then
@@ -625,16 +724,43 @@ main() {
         exit 1
     fi
 
-    # Create base output directory
-    mkdir -p "$BASE_OUT_DIR"
+    if [[ "$S1_ENABLED" == "true" && ! -f "$SCRIPT_DIR/s1_fast_processor.py" ]]; then
+        log ERROR "S1 processor script not found: $SCRIPT_DIR/s1_fast_processor.py"
+        exit 1
+    fi
+
+    if [[ "$S2_ENABLED" == "true" && ! -f "$SCRIPT_DIR/s2_fast_processor.py" ]]; then
+        log ERROR "S2 processor script not found: $SCRIPT_DIR/s2_fast_processor.py"
+        exit 1
+    fi
 
     # Get total number of tiles
-    local total_tiles=$(jq '.features | length' "$GEOJSON_FILE")
+    local gzd_filter="${GZD_FILTER^^}"
+    if [[ -n "$gzd_filter" ]]; then
+        log INFO "GZD filter enabled: $gzd_filter"
+    fi
+
+    local total_tiles=$(jq --arg gzd "$gzd_filter" '
+        def matches_gzd(g):
+            if g == "" then true
+            else (.properties.MGRS // "" | ascii_upcase | startswith(g))
+            end;
+        [ .features[] | select(matches_gzd($gzd)) ] | length
+    ' "$GEOJSON_FILE")
     log INFO "Found $total_tiles MGRS tiles to process"
+
+    if (( total_tiles == 0 )); then
+        log WARNING "No tiles match the current filter (GZD_FILTER=\"$gzd_filter\"). Nothing to do."
+        exit 0
+    fi
 
     # Track results
     local tiles_completed=()
     local tiles_failed=()
+    declare -A tiles_done=()
+    local tile_pids=()
+    local tile_ids=()
+    local tile_start_times=()
 
     # Process each tile
     local tile_index=0
@@ -643,15 +769,32 @@ main() {
 
         log INFO "Processing tile $((tile_index + 1))/$total_tiles: $mgrs_id"
 
-        if process_mgrs_tile "$mgrs_id" "$feature"; then
-            tiles_completed+=("$mgrs_id")
-        else
-            tiles_failed+=("$mgrs_id")
-        fi
+        wait_for_tile_slot tile_pids tile_ids tile_start_times tiles_completed tiles_failed tiles_done
+
+        ( process_mgrs_tile "$mgrs_id" "$feature" ) &
+        tile_pids+=($!)
+        tile_ids+=("$mgrs_id")
+        tile_start_times+=("$(date +%s)")
 
         tile_index=$((tile_index + 1))
 
-    done < <(jq -c '.features[]' "$GEOJSON_FILE")
+    done < <(jq -c --arg gzd "$gzd_filter" '
+        def matches_gzd(g):
+            if g == "" then true
+            else (.properties.MGRS // "" | ascii_upcase | startswith(g))
+            end;
+        .features[] | select(matches_gzd($gzd))
+    ' "$GEOJSON_FILE")
+
+    # Wait for remaining tiles to finish
+    while true; do
+        reap_finished_tiles tile_pids tile_ids tile_start_times tiles_completed tiles_failed tiles_done
+        local active=$(count_active_tiles tile_pids tiles_done)
+        if (( active == 0 )); then
+            break
+        fi
+        sleep 2
+    done
 
     # Final summary
     log HEADER "Processing Complete"

@@ -28,3 +28,7 @@ tessera_preprocessing/tiff_shp_analyzer.py
 .vscode
 
 tessera_infer/checkpoints/*
+
+
+# drop venv
+.venv/
